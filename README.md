@@ -44,10 +44,10 @@ docker-compose down            # 停止・コンテナ削除
 APP_PASSWORD=demo1234
 ```
 
-- 設定後は `docker-compose up -d` で反映。ログイン後はトークンがブラウザに保存され、左下「ログアウト」で解除できる。
-- これはアプリ全体の入口ゲート（共通パスワード）。下記の「現在のユーザ」切替（alice/bob…）は ABAC デモ用の簡易ユーザ切替で、別物。
+- 設定後は `docker-compose up -d` で反映。ログイン後はトークンがブラウザに保存され、右上「ログアウト」で解除できる。
+- これはアプリ全体の入口ゲート（共通パスワード）。右上の「現在のユーザ」切替（alice/bob…）は ABAC デモ用の簡易ユーザ切替で、別物。
 
-左下の「現在のユーザ」でユーザを切り替えられる（`X-User-Id` ヘッダでユーザを識別。本番では OIDC / JWT に置き換える）。`admin` のみ「RBAC 管理」メニューが表示される。
+右上の「現在のユーザ」でユーザを切り替えられる（`X-User-Id` ヘッダでユーザを識別。本番では OIDC / JWT に置き換える）。`admin` のみ「RBAC 管理」メニューが表示される。
 
 ### アクセス制御は属性ベース（ABAC）
 
@@ -65,22 +65,24 @@ APP_PASSWORD=demo1234
 
 ## 試せるパターン例
 
-### パターン1: 部署ごとに見えるツールが変わる（ABAC）
-左下のユーザを `alice`(営業) / `bob`(マーケ) / `carol`(サポート) / `dave`(分析) と切り替え、「レジストリ」画面を見る。部署に応じて使える Agent / MCP が変わり、使えないものは「利用不可」表示になる。
+> 各ユーザが使える Agent / MCP は上の表のとおり（部署で決まる）。組み合わせるツールはその表の範囲で選ぶ。
 
-### パターン2: 単一 Agent ×複数 MCP（営業）
+### パターン1: 部署ごとに見えるツールが変わる（ABAC）
+右上のユーザを `alice`(営業) / `bob`(マーケ) / `carol`(サポート) / `dave`(分析) と切り替え、「レジストリ」画面を見る。部署に応じて使える Agent / MCP が変わり、使えないものは「利用不可」表示になる。
+
+### パターン2: 単一 Agent ×複数 MCP（営業 = alice）
 `alice` で「マイツール」→ Sales Agent と CRM / Email を有効化 →「実行」で Sales Agent ＋ CRM ＋ Email を選択。
 入力例: **「今のパイプライン状況を要約して、最も金額の大きい進行中の商談へのフォローアップメール下書きも作って」**
-→ Gemini が `pipeline_summary` / `draft_email` 等を自律実行。
+→ Gemini が `pipeline_summary` / `list_deals` / `get_customer` / `draft_email` を自律実行。
 
-### パターン3: 複数 Agent ×複数 MCP の連鎖（マーケ→分析）
-`bob` で Marketing Agent ＋ Revenue Analyst Agent を選び、Analytics / Market Research / CRM を有効化して実行。
-入力例: **「今期のマーケ施策の成果を評価し、IT業界の市場トレンドも踏まえて来期に注力すべき施策を提案して」**
+### パターン3: 複数 Agent ×複数 MCP の連鎖（マーケ→分析 = bob）
+`bob` で Marketing Agent ＋ Revenue Analyst Agent を選び、Analytics / Market Research を有効化して実行（※ bob は CRM/Calendar は使えない）。
+入力例: **「今期のマーケ施策の成果(CTR/CVR/CPA)を評価し、IT業界の市場トレンドも踏まえて来期に注力すべき施策を提案して」**
 → Marketing が `campaign_performance`/`market_trends` を実行 → Analyst が「元タスク＋前段結果」を受けて結論＋根拠数値で提案（A2A 連鎖）。
 
-### パターン4: カスタム Agent（組み合わせを保存）
-「カスタムAgent」画面で、有効化済みの Agent と MCP を組み合わせて独自 Agent を作成・保存し、ワンクリック実行。
-例: 「営業デイリー」= Sales Agent ＋ CRM ＋ Calendar、入力「今日の予定と動くべき商談は？」
+### パターン4: カスタム Agent（組み合わせを保存 = alice）
+`alice` で、有効化済みの Agent と MCP を「カスタムAgent」画面で組み合わせて独自 Agent を作成・保存し、ワンクリック実行。
+例: 「営業デイリー」= Sales Agent ＋ CRM ＋ Calendar、入力「今日の予定と、動くべき（金額の大きい進行中の）商談は？パイプライン全体も集計して」
 
 ### パターン5: ABAC を管理者が変更（admin）
 `admin` で「RBAC 管理」を開く。

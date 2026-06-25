@@ -52,7 +52,11 @@ docker-compose.yml          # frontend + backend + 7 個の sandbox サービス
 
 ## プロトタイプの Agent / MCP（apps/sandbox）
 
-チームでの意識合わせ用に、**実際に動く** A2A エージェントと MCP サーバを用意している。A2A・MCP は読みやすさ優先で **JSON-RPC の最小サブセットを手書き**。1 つのイメージから環境変数で役割を切り替える（[main.py](apps/sandbox/src/sandbox/main.py)）。
+チームでの意識合わせ用に、**実際に動く** A2A エージェントと MCP サーバを用意している。1 つのイメージから環境変数（`SERVICE_KIND` / `SERVICE_NAME`）で役割を切り替える（[main.py](apps/sandbox/src/sandbox/main.py)）。
+
+- **MCP サーバ**: [FastMCP](https://gofastmcp.com/) で実装（型付きツール、Streamable HTTP、既定パス `/mcp/`）。[mcp_apps.py](apps/sandbox/src/sandbox/mcp_apps.py)。
+- **A2A エージェント**: A2A 受け口は FastAPI（最小サブセット）だが、内部の実行は **LangChain / LangGraph の ReAct エージェント**（[llm.py](apps/sandbox/src/sandbox/llm.py)）。`langchain-mcp-adapters` で MCP ツールを読み込み、`ChatVertexAI`（Vertex 上の Gemini）で function calling する。
+  - Gemini 2.5 は thinking 有効だと tool 併用時にまれに空応答になるため `thinking_budget=0` で無効化している。
 
 業務寄りのモック構成。
 
@@ -61,11 +65,11 @@ docker-compose.yml          # frontend + backend + 7 個の sandbox サービス
 
 複数エージェント×複数 MCP を「実行」画面やカスタム Agent で組み合わせられる。複数エージェント時はオーケストレータが順に実行し、2 番目以降には「元タスク + 前段エージェントの結果」を渡す。
 
-### エージェントの実行エンジン（GCP Vertex AI / Gemini）
+### エージェントの実行エンジン（LangChain + Vertex Gemini）
 
-エージェントは **GCP Vertex AI 上の Gemini**（`google-genai` SDK、[llm.py](apps/sandbox/src/sandbox/llm.py)）で動く。認証は **ADC**（`~/.config/gcloud/application_default_credentials.json` をコンテナにマウント、`GOOGLE_APPLICATION_CREDENTIALS` で指定）。プロジェクトは `GOOGLE_CLOUD_PROJECT`、無ければ ADC の `quota_project_id` から解決。モデルは `GEMINI_MODEL`（既定 `gemini-2.5-flash`）、ロケーションは `CLOUD_ML_REGION`（既定 `global`）。
+エージェントは **LangGraph の ReAct エージェント + `ChatVertexAI`（Vertex 上の Gemini）**で動く。認証は **ADC**（`~/.config/gcloud/application_default_credentials.json` をコンテナにマウント、`GOOGLE_APPLICATION_CREDENTIALS` で指定）。プロジェクトは `GCP_PROJECT`、無ければ ADC の `quota_project_id` から解決。モデルは `GEMINI_MODEL`（既定 `gemini-2.5-flash`）、ロケーションは `CLOUD_ML_REGION`（既定 `global`）。
 
-実行時、エージェントは選択された MCP サーバの `tools/list` を Gemini の `FunctionDeclaration` に変換し、**function calling ループ**で `tools/call` を実行する。**Vertex 呼び出しが失敗した場合（クォータ/権限等）は LLM 不要の決定的ルールベースにフォールバック**するので、GCP 未設定でもデモは動く（[agent.py](apps/sandbox/src/sandbox/agent.py)）。
+実行時、エージェントは選択された MCP サーバ（FastMCP）に `langchain-mcp-adapters` で接続してツールを読み込み、LangChain のエージェントループで実行する。**Vertex 未設定/失敗時は、引数不要の一覧/集計系ツールを叩くフォールバック**で動く（[agent.py](apps/sandbox/src/sandbox/agent.py)）。
 
 ### トレース（LangSmith）
 

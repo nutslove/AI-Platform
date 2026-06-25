@@ -49,20 +49,43 @@ a {
   color: #fff;
 }
 
-.sidebar .user-switch {
-  margin-top: auto;
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 10px 24px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7eb;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
 }
 
-.sidebar select {
-  width: 100%;
-  padding: 6px;
-  margin-top: 4px;
+.topbar-user select {
+  padding: 6px 8px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+}
+
+.topbar-logout {
+  font-size: 13px;
 }
 
 .content {
   flex: 1;
   padding: 24px 32px;
+  overflow-y: auto;
 }
 
 .card {

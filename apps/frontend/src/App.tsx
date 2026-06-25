@@ -24,45 +24,50 @@ export default function App() {
           <NavLink to="/execute">実行</NavLink>
           {isAdmin && <NavLink to="/admin">RBAC 管理</NavLink>}
         </nav>
-        <div className="user-switch">
-          <div className="muted">現在のユーザ（簡易ログイン）</div>
-          <select
-            value={user.id}
-            onChange={(e) => void switchUser(e.target.value)}
-          >
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.username}
-                {u.attributes?.department ? ` / ${u.attributes.department}` : ""} ({u.role})
-              </option>
-            ))}
-          </select>
-          {getAppToken() && (
-            <button
-              className="logout"
-              onClick={() => {
-                setAppToken(null);
-                window.location.reload();
-              }}
-            >
-              ログアウト
-            </button>
-          )}
-        </div>
       </aside>
 
-      <main className="content">
-        <Routes>
-          <Route path="/" element={<Navigate to="/registry" replace />} />
-          <Route path="/registry" element={<RegistryPage />} />
-          <Route path="/my-tools" element={<MyToolsPage />} />
-          <Route path="/custom-agents" element={<CustomAgentsPage />} />
-          <Route path="/execute" element={<ExecutePage />} />
-          <Route
-            path="/admin"
-            element={isAdmin ? <AdminRbacPage /> : <Navigate to="/registry" replace />}
-          />
-        </Routes>
+      <main className="main">
+        <header className="topbar">
+          <div className="topbar-user">
+            <span className="muted">現在のユーザ</span>
+            <select
+              value={user.id}
+              onChange={(e) => void switchUser(e.target.value)}
+            >
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.username}
+                  {u.attributes?.department ? ` / ${u.attributes.department}` : ""} ({u.role})
+                </option>
+              ))}
+            </select>
+            {getAppToken() && (
+              <button
+                className="topbar-logout"
+                onClick={() => {
+                  setAppToken(null);
+                  window.location.reload();
+                }}
+              >
+                ログアウト
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="content">
+          <Routes>
+            <Route path="/" element={<Navigate to="/registry" replace />} />
+            <Route path="/registry" element={<RegistryPage />} />
+            <Route path="/my-tools" element={<MyToolsPage />} />
+            <Route path="/custom-agents" element={<CustomAgentsPage />} />
+            <Route path="/execute" element={<ExecutePage />} />
+            <Route
+              path="/admin"
+              element={isAdmin ? <AdminRbacPage /> : <Navigate to="/registry" replace />}
+            />
+          </Routes>
+        </div>
       </main>
     </div>
   );
