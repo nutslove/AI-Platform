@@ -17,13 +17,12 @@ DEFAULT_REGION = "global"
 
 # 全エージェント共通の行動指針
 BASE_SYSTEM = (
-    "あなたは業務アシスタントです。利用可能なツールは自分で積極的に呼び出して回答します。"
-    "引数が不要な一覧/集計系ツールは、ユーザに確認せずまず実行してデータを取得してください。"
-    "一覧を取得するときはまず絞り込み無し（引数なし）で全件を取得します。"
-    "固有名詞・数値・ID は必ずツールの結果から取得し、推測やでっち上げは絶対にしないでください。"
-    "ツール結果に無い情報は『データなし』と述べます。"
-    "必要な情報がツールで得られる場合は聞き返さず、データに基づいて結論を出します。"
-    "最終回答は結論（示唆・推奨アクション）を先に、根拠となる数値を後に、簡潔にまとめてください。"
+    "あなたは業務アシスタントです。利用可能なツールを使ってユーザの要求に答えます。"
+    "一覧/集計系ツールはまず引数なしで実行してデータを取得します。"
+    "固有名詞・数値・ID は推測せずツール結果から引用してください（無ければ『データなし』とする）。"
+    "ツール呼び出しは必要最小限にし、同じツールを同じ引数で繰り返さないこと。"
+    "十分な情報が集まったら、それ以上ツールを呼ばずに直ちに最終回答を出してください。"
+    "最終回答は結論（示唆・推奨アクション）を先に、根拠となる数値を後に、簡潔にまとめます。"
 )
 
 
@@ -80,6 +79,23 @@ async def _load_tools(mcp_servers: list[dict]):
             server_of[t.name] = name
         tools.extend(stools)
     return tools, server_of, errors
+
+
+def _content_text(content) -> str:
+    """str か block 配列の content からテキストを取り出す。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return ""
+
+
+def _result_text(out) -> str:
+    """ツール出力（ToolMessage 等）から結果テキストを取り出す。"""
+    c = getattr(out, "content", out)
+    if isinstance(c, (str, list)):
+        return _content_text(c)
+    return str(c)
 
 
 def _trace_from_messages(messages, server_of: dict[str, str]) -> tuple[str, list[dict]]:
@@ -146,7 +162,7 @@ async def run_agent(
     for _ in range(3):
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": text}]},
-            config={"recursion_limit": 25, "run_name": f"agent.{agent_name}"},
+            config={"recursion_limit": 40, "run_name": f"agent.{agent_name}"},
         )
         final_text, tool_calls = _trace_from_messages(result["messages"], server_of)
         if final_text or tool_calls:
@@ -158,6 +174,84 @@ async def run_agent(
         final_text = "ツール実行結果:\n" + "\n".join(lines)
 
     return final_text or "(応答なし)", errors + tool_calls
+
+
+async def run_agent_stream(
+    system: str, text: str, mcp_servers: list[dict], agent_name: str = "",
+    known_tools: set[str] | None = None,
+):
+    """LangGraph の astream_events でトークン/ツールイベントを逐次 yield する。
+
+    yield されるイベント dict:
+      - {"type":"token","text": ...}   最終回答のトークン
+      - {"type":"tool","server","tool","args","result"}   ツール実行
+      - {"type":"final","text": ...}   最終回答（確定）
+    """
+
+    async def _fallback_stream(reason: str | None = None):
+        summary, calls = await run_fallback(known_tools or set(), text, mcp_servers)
+        for c in calls:
+            if c.get("tool"):
+                yield {"type": "tool", "server": c.get("server", ""), "tool": c["tool"],
+                       "args": c.get("args", {}), "result": c.get("result", "")}
+        if reason:
+            summary = f"[LLM 実行に失敗したためフォールバック: {reason}]\n\n{summary}"
+        yield {"type": "token", "text": summary}
+        yield {"type": "final", "text": summary}
+
+    if not vertex_available():
+        async for ev in _fallback_stream():
+            yield ev
+        return
+
+    from langchain_google_vertexai import ChatVertexAI
+    from langgraph.prebuilt import create_react_agent
+
+    project, location = gcp_config()
+    model = os.getenv("GEMINI_MODEL") or os.getenv("VERTEX_MODEL") or DEFAULT_MODEL
+    tools, server_of, errors = await _load_tools(mcp_servers)
+    for e in errors:
+        yield {"type": "tool", "server": e["server"], "tool": None, "result": e["result"]}
+
+    llm = ChatVertexAI(
+        model=model, project=project, location=location,
+        temperature=0, max_retries=2, thinking_budget=0,
+    )
+    prompt = BASE_SYSTEM + ("\n\n" + system if system else "")
+    agent = create_react_agent(llm, tools, prompt=prompt)
+
+    final_text = ""
+    try:
+        async for event in agent.astream_events(
+            {"messages": [{"role": "user", "content": text}]},
+            version="v2",
+            config={"recursion_limit": 40, "run_name": f"agent.{agent_name}"},
+        ):
+            et = event.get("event")
+            if et == "on_chat_model_stream":
+                tx = _content_text(getattr(event["data"].get("chunk"), "content", ""))
+                if tx:
+                    final_text += tx
+                    yield {"type": "token", "text": tx}
+            elif et == "on_tool_end":
+                name = event.get("name", "")
+                yield {
+                    "type": "tool",
+                    "server": server_of.get(name, ""),
+                    "tool": name,
+                    "args": event["data"].get("input", {}),
+                    "result": _result_text(event["data"].get("output"))[:600],
+                }
+    except Exception as exc:  # noqa: BLE001 - recursion 等はフォールバック
+        async for ev in _fallback_stream(str(exc).splitlines()[0][:140]):
+            yield ev
+        return
+
+    if not final_text:
+        async for ev in _fallback_stream():
+            yield ev
+        return
+    yield {"type": "final", "text": final_text}
 
 
 async def run_fallback(

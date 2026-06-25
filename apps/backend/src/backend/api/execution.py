@@ -9,8 +9,12 @@ metadata に載せて渡し、Agent 側がそれらの MCP に接続してツー
 
 from __future__ import annotations
 
+import json
+import os
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from backend.api.deps import get_current_user
 from backend.models.schemas import (
@@ -23,7 +27,106 @@ from backend.store.memory import store
 
 router = APIRouter(prefix="/execute", tags=["execution"])
 
-A2A_TIMEOUT = 15.0
+# LangChain エージェントは複数回の LLM 呼び出し + MCP 接続で時間がかかるため長め。
+A2A_TIMEOUT = float(os.getenv("A2A_TIMEOUT", "180"))
+
+# SSE レスポンス共通ヘッダ（nginx のバッファリング無効化など）
+SSE_HEADERS = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+
+
+def validate_enablements(
+    user: User, agent_ids: list[str], mcp_server_ids: list[str]
+) -> list[dict]:
+    """実行対象が有効化済みかを検証し、Agent に渡す MCP 接続情報を返す。"""
+    enab = store.get_enablements(user)
+    if not set(agent_ids) <= set(enab.enabled_agent_ids):
+        raise HTTPException(status_code=403, detail="有効化されていない Agent が含まれます")
+    if not set(mcp_server_ids) <= set(enab.enabled_mcp_server_ids):
+        raise HTTPException(status_code=403, detail="有効化されていない MCP サーバが含まれます")
+    if not agent_ids:
+        raise HTTPException(status_code=400, detail="Agent を 1 つ以上選択してください")
+    servers = {m.id: m for m in store.list_mcp_servers()}
+    return [{"name": servers[s].name, "url": servers[s].url} for s in mcp_server_ids]
+
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _a2a_payload(text: str, mcp_servers: list[dict]) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "messageId": "platform-request",
+                "parts": [{"kind": "text", "text": text}],
+                "metadata": {"mcpServers": mcp_servers},
+            }
+        },
+    }
+
+
+async def stream_composition(
+    user: User, agent_ids: list[str], mcp_server_ids: list[str], input_text: str
+):
+    """SSE で実行を逐次配信する。各 Agent の /stream を中継しトークンを流す。"""
+    mcp_servers = validate_enablements(user, agent_ids, mcp_server_ids)
+    agents = {a.id: a for a in store.list_agents()}
+
+    yield _sse({"type": "step", "source": "platform", "detail": f"入力: {input_text!r}"})
+    for s in mcp_servers:
+        yield _sse({"type": "step", "source": "platform", "detail": f"MCP を提供: {s['name']}"})
+
+    prev_output: str | None = None
+    final_output = ""
+    failed = False
+    for aid in agent_ids:
+        agent = agents[aid]
+        agent_input = (
+            input_text if prev_output is None
+            else f"{input_text}\n\n[前のエージェントの結果]\n{prev_output}"
+        )
+        yield _sse({"type": "step", "source": "a2a", "detail": f"{agent.name} にタスク送信"})
+        yield _sse({"type": "agent_start", "agent": agent.name})
+
+        agent_text = ""
+        try:
+            async with httpx.AsyncClient(timeout=A2A_TIMEOUT) as client:
+                url = agent.a2a_url.rstrip("/") + "/stream"
+                async with client.stream("POST", url, json=_a2a_payload(agent_input, mcp_servers)) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        ev = json.loads(line[5:].strip())
+                        t = ev.get("type")
+                        if t == "token":
+                            agent_text += ev.get("text", "")
+                            yield _sse({"type": "token", "agent": agent.name, "text": ev.get("text", "")})
+                        elif t == "tool" and ev.get("tool"):
+                            yield _sse({
+                                "type": "step", "source": "mcp",
+                                "detail": f"{ev.get('server', '')} / {ev['tool']} -> {ev.get('result', '')}",
+                            })
+                        elif t == "final":
+                            agent_text = ev.get("text") or agent_text
+        except Exception as exc:  # noqa: BLE001 - 到達不能/タイムアウト等
+            failed = True
+            yield _sse({"type": "step", "source": "a2a",
+                        "detail": f"{agent.name} 失敗: {str(exc).splitlines()[0][:120]}"})
+            continue
+
+        yield _sse({"type": "step", "source": "a2a", "detail": f"{agent.name} 応答"})
+        yield _sse({"type": "agent_done", "agent": agent.name})
+        final_output = agent_text
+        prev_output = agent_text
+
+    yield _sse({"type": "done", "status": "error" if failed else "completed",
+                "output": final_output or "(出力なし)"})
 
 
 def _send_to_agent(a2a_url: str, text: str, mcp_servers: list[dict]) -> dict:
@@ -67,23 +170,8 @@ def run_composition(
 
     `/execute`（アドホック実行）と カスタム Agent の実行 の両方から使う。
     """
-    enab = store.get_enablements(user)
-
-    # 実行対象は「有効化済み」でなければならない（サーバ側で必ず検証）
-    if not set(agent_ids) <= set(enab.enabled_agent_ids):
-        raise HTTPException(status_code=403, detail="有効化されていない Agent が含まれます")
-    if not set(mcp_server_ids) <= set(enab.enabled_mcp_server_ids):
-        raise HTTPException(status_code=403, detail="有効化されていない MCP サーバが含まれます")
-    if not agent_ids:
-        raise HTTPException(status_code=400, detail="Agent を 1 つ以上選択してください")
-
+    mcp_servers = validate_enablements(user, agent_ids, mcp_server_ids)
     agents = {a.id: a for a in store.list_agents()}
-    servers = {m.id: m for m in store.list_mcp_servers()}
-
-    # Agent に渡す「選択された MCP サーバ」一覧（接続情報）
-    mcp_servers = [
-        {"name": servers[sid].name, "url": servers[sid].url} for sid in mcp_server_ids
-    ]
 
     steps: list[ExecutionStep] = [
         ExecutionStep(source="platform", detail=f"入力: {input_text!r}"),
@@ -137,3 +225,16 @@ def run_composition(
 @router.post("", response_model=ExecuteResponse)
 def execute(req: ExecuteRequest, user: User = Depends(get_current_user)) -> ExecuteResponse:
     return run_composition(user, req.agent_ids, req.mcp_server_ids, req.input)
+
+
+@router.post("/stream")
+def execute_stream(
+    req: ExecuteRequest, user: User = Depends(get_current_user)
+) -> StreamingResponse:
+    # 検証は事前に行い、エラーは通常の HTTP で返す（ストリーム前）
+    validate_enablements(user, req.agent_ids, req.mcp_server_ids)
+    return StreamingResponse(
+        stream_composition(user, req.agent_ids, req.mcp_server_ids, req.input),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )

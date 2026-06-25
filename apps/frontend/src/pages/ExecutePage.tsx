@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Agent, Enablements, ExecuteResponse, McpServer } from "../types";
 import { api } from "../api/client";
+import ResultView from "../components/ResultView";
+import { applyEvent, emptyResult } from "../lib/stream";
 
 // 有効化済みの Agent / MCPサーバを複数選んで組み合わせ、実行する画面。
 export default function ExecutePage() {
@@ -36,15 +38,13 @@ export default function ExecutePage() {
 
   async function run() {
     setError(null);
-    setResult(null);
+    setResult(emptyResult());
     setRunning(true);
     try {
-      const res = await api.execute({
-        agent_ids: selAgents,
-        mcp_server_ids: selServers,
-        input,
-      });
-      setResult(res);
+      await api.executeStream(
+        { agent_ids: selAgents, mcp_server_ids: selServers, input },
+        (ev) => setResult((prev) => applyEvent(prev ?? emptyResult(), ev)),
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -115,11 +115,8 @@ export default function ExecutePage() {
 
       {result && (
         <div className="card">
-          <h3>結果（status: {result.status}）</h3>
-          <pre className="trace">
-            {result.steps.map((s) => `[${s.source}] ${s.detail}`).join("\n")}
-          </pre>
-          <p>{result.output}</p>
+          <h3>結果</h3>
+          <ResultView result={result} />
         </div>
       )}
     </div>

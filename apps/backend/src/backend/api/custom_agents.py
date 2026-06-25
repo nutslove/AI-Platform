@@ -8,8 +8,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from fastapi.responses import StreamingResponse
+
 from backend.api.deps import get_current_user
-from backend.api.execution import run_composition
+from backend.api.execution import (
+    SSE_HEADERS,
+    run_composition,
+    stream_composition,
+    validate_enablements,
+)
 from backend.models.schemas import (
     CustomAgent,
     CustomAgentCreate,
@@ -59,3 +66,18 @@ def run_custom_agent(
         raise HTTPException(status_code=404, detail="カスタム Agent が見つかりません")
     # 構成は保存済みのものを使い、入力だけリクエストから受け取る
     return run_composition(user, custom.agent_ids, custom.mcp_server_ids, req.input)
+
+
+@router.post("/{custom_id}/run/stream")
+def run_custom_agent_stream(
+    custom_id: str, req: ExecuteRequest, user: User = Depends(get_current_user)
+) -> StreamingResponse:
+    custom = store.get_custom_agent(custom_id)
+    if custom is None or custom.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="カスタム Agent が見つかりません")
+    validate_enablements(user, custom.agent_ids, custom.mcp_server_ids)
+    return StreamingResponse(
+        stream_composition(user, custom.agent_ids, custom.mcp_server_ids, req.input),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )

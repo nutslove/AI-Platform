@@ -7,6 +7,8 @@ import type {
   McpServer,
 } from "../types";
 import { api } from "../api/client";
+import ResultView from "../components/ResultView";
+import { applyEvent, emptyResult } from "../lib/stream";
 
 // Agent と MCP サーバを組み合わせて独自 Agent を作る画面。
 // 組み合わせに使えるのは「有効化済み」のツールのみ。
@@ -87,9 +89,14 @@ export default function CustomAgentsPage() {
   async function run(custom: CustomAgent) {
     setRunningId(custom.id);
     setError(null);
+    setResults((r) => ({ ...r, [custom.id]: emptyResult() }));
     try {
-      const res = await api.runCustomAgent(custom.id, inputs[custom.id] ?? "");
-      setResults((r) => ({ ...r, [custom.id]: res }));
+      await api.runCustomAgentStream(custom.id, inputs[custom.id] ?? "", (ev) =>
+        setResults((r) => ({
+          ...r,
+          [custom.id]: applyEvent(r[custom.id] ?? emptyResult(), ev),
+        })),
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -204,13 +211,7 @@ export default function CustomAgentsPage() {
           </div>
           {results[c.id] && (
             <div style={{ marginTop: 8 }}>
-              <div className="muted">status: {results[c.id].status}</div>
-              <pre className="trace">
-                {results[c.id].steps
-                  .map((s) => `[${s.source}] ${s.detail}`)
-                  .join("\n")}
-              </pre>
-              <p>{results[c.id].output}</p>
+              <ResultView result={results[c.id]} />
             </div>
           )}
         </div>

@@ -39,6 +39,48 @@ export function getAppToken(): string | null {
   return appToken;
 }
 
+/** SSE ストリーミング。data 行を JSON パースして onEvent に渡す。 */
+export async function streamPost(
+  path: string,
+  body: unknown,
+  onEvent: (ev: Record<string, unknown>) => void,
+): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (currentUserId) headers["X-User-Id"] = currentUserId;
+  if (appToken) headers["X-App-Token"] = appToken;
+
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+      if (dataLine) {
+        try {
+          onEvent(JSON.parse(dataLine.slice(5).trim()));
+        } catch {
+          /* ignore malformed line */
+        }
+      }
+    }
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -118,6 +160,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(req),
     }),
+  executeStream: (req: ExecuteRequest, onEvent: (ev: Record<string, unknown>) => void) =>
+    streamPost("/execute/stream", req, onEvent),
 
   // --- custom agents（Agent + MCP の組み合わせ）---
   listCustomAgents: () => request<CustomAgent[]>("/me/custom-agents"),
@@ -133,4 +177,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ agent_ids: [], mcp_server_ids: [], input }),
     }),
+  runCustomAgentStream: (
+    id: string,
+    input: string,
+    onEvent: (ev: Record<string, unknown>) => void,
+  ) =>
+    streamPost(
+      `/me/custom-agents/${id}/run/stream`,
+      { agent_ids: [], mcp_server_ids: [], input },
+      onEvent,
+    ),
 };

@@ -55,7 +55,8 @@ export default function App() {
           </div>
         </header>
 
-        <div className="content">
+        {/* user.id をキーにして、ユーザ切替時に各ページを再マウント（データ再取得）させる */}
+        <div className="content" key={user.id}>
           <Routes>
             <Route path="/" element={<Navigate to="/registry" replace />} />
             <Route path="/registry" element={<RegistryPage />} />

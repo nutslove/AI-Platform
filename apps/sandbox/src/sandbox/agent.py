@@ -11,11 +11,23 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 
-from sandbox.llm import run_agent, run_fallback, vertex_available
+from sandbox.llm import run_agent, run_agent_stream, run_fallback, vertex_available
+
+
+def _extract(message: dict) -> tuple[str, list[dict]]:
+    text = " ".join(
+        p.get("text", "")
+        for p in message.get("parts", [])
+        if p.get("kind") == "text"
+    ).strip()
+    mcp_servers = (message.get("metadata") or {}).get("mcpServers") or []
+    return text, mcp_servers
 
 
 @dataclass(frozen=True)
@@ -54,20 +66,31 @@ def create_agent_app(agent: AgentDef, public_url: str) -> FastAPI:
     def get_agent_card() -> dict:
         return agent_card
 
+    @app.post("/stream")
+    async def message_stream(request: Request) -> StreamingResponse:
+        body = await request.json()
+        message = (body.get("params") or {}).get("message") or {}
+        text, mcp_servers = _extract(message)
+
+        async def gen():
+            async for ev in run_agent_stream(
+                agent.system, text, mcp_servers, agent.name, agent.known_tools
+            ):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
+
     @app.post("/")
     async def message_send(request: Request) -> dict:
         body = await request.json()
         req_id = body.get("id")
         params = body.get("params") or {}
         message = params.get("message") or {}
-
-        text = " ".join(
-            p.get("text", "")
-            for p in message.get("parts", [])
-            if p.get("kind") == "text"
-        ).strip()
-        metadata = message.get("metadata") or {}
-        mcp_servers = metadata.get("mcpServers") or []
+        text, mcp_servers = _extract(message)
 
         if vertex_available():
             try:
@@ -76,7 +99,8 @@ def create_agent_app(agent: AgentDef, public_url: str) -> FastAPI:
                 )
             except Exception as exc:  # noqa: BLE001 - 失敗時はフォールバック
                 summary, tool_calls = await run_fallback(agent.known_tools, text, mcp_servers)
-                summary = f"[Vertex 実行に失敗したためフォールバック: {exc}]\n" + summary
+                reason = str(exc).splitlines()[0][:140]
+                summary = f"[LLM 実行に失敗したためフォールバック: {reason}]\n\n" + summary
         else:
             summary, tool_calls = await run_fallback(agent.known_tools, text, mcp_servers)
 
