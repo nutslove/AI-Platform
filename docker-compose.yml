@@ -1,0 +1,119 @@
+# 共通設定: sandbox イメージ（1 つのイメージで MCP/エージェントを兼ねる）
+x-sandbox: &sandbox
+  build:
+    context: ./apps/sandbox
+  image: ai-platform-sandbox
+  restart: unless-stopped
+
+# エージェント共通: ADC マウント
+x-adc-volume: &adc-volume
+  - ${HOME}/.config/gcloud/application_default_credentials.json:/gcp/adc.json:ro
+
+# エージェント共通の環境変数（GCP Vertex/Gemini + LangSmith）
+x-agent-env: &agent-env
+  GOOGLE_APPLICATION_CREDENTIALS: /gcp/adc.json
+  GCP_PROJECT: ${GCP_PROJECT:-}
+  CLOUD_ML_REGION: ${CLOUD_ML_REGION:-global}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+  # LangSmith トレース連携（.env に設定すると有効化される）
+  LANGSMITH_TRACING: ${LANGSMITH_TRACING:-}
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+  LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-ai-platform}
+  LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-}
+
+services:
+  backend:
+    build:
+      context: ./apps/backend
+    image: ai-platform-backend
+    environment:
+      CORS_ORIGINS: "http://localhost,http://localhost:5173"
+      # 共通パスワードによる簡易ログイン（.env に設定すると有効。未設定ならログイン不要）
+      APP_PASSWORD: ${APP_PASSWORD:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - crm-mcp
+      - analytics-mcp
+      - email-mcp
+      - kb-mcp
+      - calendar-mcp
+      - market-mcp
+      - sales-agent
+      - marketing-agent
+      - support-agent
+      - analyst-agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./apps/frontend
+    image: ai-platform-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+  # --- MCP サーバ（業務）---
+  crm-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: crm }
+  analytics-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: analytics }
+  email-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: email }
+  kb-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: kb }
+  calendar-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: calendar }
+  market-mcp:
+    <<: *sandbox
+    environment: { SERVICE_KIND: mcp, SERVICE_NAME: market }
+
+  # --- A2A エージェント（業務ロール）---
+  # GCP Vertex(Gemini) を ADC で使う。GCP_PROJECT 未設定なら ADC の quota_project_id。
+  sales-agent:
+    <<: *sandbox
+    volumes: *adc-volume
+    environment:
+      <<: *agent-env
+      SERVICE_KIND: agent
+      SERVICE_NAME: sales
+      PUBLIC_URL: http://sales-agent:8000
+  marketing-agent:
+    <<: *sandbox
+    volumes: *adc-volume
+    environment:
+      <<: *agent-env
+      SERVICE_KIND: agent
+      SERVICE_NAME: marketing
+      PUBLIC_URL: http://marketing-agent:8000
+  support-agent:
+    <<: *sandbox
+    volumes: *adc-volume
+    environment:
+      <<: *agent-env
+      SERVICE_KIND: agent
+      SERVICE_NAME: support
+      PUBLIC_URL: http://support-agent:8000
+  analyst-agent:
+    <<: *sandbox
+    volumes: *adc-volume
+    environment:
+      <<: *agent-env
+      SERVICE_KIND: agent
+      SERVICE_NAME: analyst
+      PUBLIC_URL: http://analyst-agent:8000
+
+# 永続 DB を追加する場合の雛形（現状 backend はインメモリのため未使用）:
+# volumes:
+#   db-data:
