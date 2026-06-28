@@ -1,6 +1,6 @@
 # アーキテクチャ図
 
-このプラットフォームの構成図。**現状（実装済み）**と、**将来構想（AI Gateway / MCP Gateway 追加）**の 2 つを示す。
+このプラットフォームの構成図。 **現状（実装済み）** と、 **将来構想（AI Gateway / MCP Gateway 追加）** の 2 つを示す。
 図は [Mermaid](https://mermaid.js.org/)。GitHub・VS Code（Markdown Preview Mermaid 拡張）でそのまま描画される。面接で見せるなら GitHub に push してプレビュー、もしくは [mermaid.live](https://mermaid.live) に貼ると確実。
 
 ---
